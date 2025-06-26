@@ -19,6 +19,26 @@ def health_check():
     """Health check endpoint"""
     return jsonify({"status": "healthy", "service": "ML Stock Predictor API"})
 
+@app.route('/status', methods=['GET'])
+def yahoo_finance_status():
+    """Check Yahoo Finance API status"""
+    try:
+        status = predictor.get_yahoo_finance_status()
+        return jsonify({
+            "yahoo_finance": status,
+            "mock_data_available": True,
+            "service": "ML Stock Predictor API"
+        })
+    except Exception as e:
+        return jsonify({
+            "yahoo_finance": {
+                "status": "error",
+                "message": f"Error checking status: {e}"
+            },
+            "mock_data_available": True,
+            "service": "ML Stock Predictor API"
+        })
+
 @app.route('/predict', methods=['POST'])
 def predict_stock():
     """Predict stock price for next day"""

@@ -10,8 +10,14 @@ import os
 import warnings
 import time
 import random
+import requests
 from mock_data_provider import MockStockDataProvider
 warnings.filterwarnings('ignore')
+
+# Global variable to track API usage and implement simple rate limiting
+_last_api_call = 0
+_api_call_count = 0
+_max_calls_per_minute = 5
 
 class StockPredictorAPI:
     def __init__(self):
@@ -22,25 +28,106 @@ class StockPredictorAPI:
         self.model_path = "stock_model.h5"
         self.mock_provider = MockStockDataProvider()
         self.using_mock_data = False
+    
+    def _wait_for_rate_limit(self):
+        """Implement simple rate limiting to avoid 429 errors"""
+        global _last_api_call, _api_call_count, _max_calls_per_minute
         
+        current_time = time.time()
+        
+        # Reset counter every minute
+        if current_time - _last_api_call > 60:
+            _api_call_count = 0
+        
+        # If we've made too many calls, wait
+        if _api_call_count >= _max_calls_per_minute:
+            wait_time = 60 - (current_time - _last_api_call)
+            if wait_time > 0:
+                print(f"Rate limiting: waiting {wait_time:.1f}s before next API call...")
+                time.sleep(wait_time)
+                _api_call_count = 0
+        
+        _last_api_call = current_time
+        _api_call_count += 1
+    def _test_yahoo_finance_connectivity(self):
+        """Test if Yahoo Finance is accessible"""
+        try:
+            test_url = "https://finance.yahoo.com"
+            response = requests.get(test_url, timeout=10)
+            return response.status_code == 200
+        except:
+            return False
+    
+    def get_yahoo_finance_status(self):
+        """Get the current status of Yahoo Finance API"""
+        try:
+            # Test a simple ticker request
+            test_ticker = yf.Ticker("AAPL")
+            
+            # Try to get basic info (lighter request than historical data)
+            info = test_ticker.info
+            
+            if info and 'symbol' in info:
+                return {
+                    "status": "working",
+                    "message": "Yahoo Finance API is accessible"
+                }
+            else:
+                return {
+                    "status": "limited", 
+                    "message": "Yahoo Finance API has limited functionality"
+                }
+                
+        except Exception as e:
+            error_str = str(e).lower()
+            if any(term in error_str for term in ["429", "too many requests", "rate limit"]):
+                return {
+                    "status": "rate_limited",
+                    "message": "Yahoo Finance API is rate limited (429 error)"
+                }
+            elif any(term in error_str for term in ["timeout", "connection", "network"]):
+                return {
+                    "status": "network_error",
+                    "message": "Network connectivity issues with Yahoo Finance"
+                }
+            else:
+                return {
+                    "status": "error",
+                    "message": f"Yahoo Finance API error: {e}"
+                }
     def fetch_data(self, ticker, days_back=365):
-        """Fetch historical data for the given ticker with retry logic"""
+        """Fetch historical data for the given ticker with robust retry logic"""
+        # First check connectivity
+        if not self._test_yahoo_finance_connectivity():
+            print("⚠ Yahoo Finance seems unreachable. Using mock data...")
+            self.df = self.mock_provider.generate_mock_data(ticker, days_back)
+            self.using_mock_data = True
+            return self.df
+        
+        # Wait for rate limiting
+        self._wait_for_rate_limit()
+        
         end_date = dt.datetime.now()
         start_date = end_date - dt.timedelta(days=days_back)
         
         self.ticker = ticker.upper()
         self.using_mock_data = False
         
-        max_retries = 2  # Reduced retries for faster fallback
+        max_retries = 4  # Increased retries for rate limiting
+        base_delay = 2  # Base delay in seconds
+        
         for attempt in range(max_retries):
             try:
-                # Add small delay to avoid rate limiting
+                # Progressive delay for rate limiting
                 if attempt > 0:
-                    delay = random.uniform(1, 3)
-                    print(f"Retrying in {delay:.1f} seconds...")
+                    # Exponential backoff with jitter
+                    delay = base_delay * (2 ** attempt) + random.uniform(0, 2)
+                    print(f"Yahoo Finance rate limited. Waiting {delay:.1f}s before retry {attempt + 1}/{max_retries}...")
                     time.sleep(delay)
                 
-                # Try to download data
+                print(f"Attempting to fetch data for {self.ticker} (attempt {attempt + 1}/{max_retries})...")
+                
+                # Try to download data with more conservative settings
                 self.df = yf.download(
                     self.ticker, 
                     start=start_date, 
@@ -48,26 +135,50 @@ class StockPredictorAPI:
                     progress=False,
                     prepost=False,
                     auto_adjust=True,
-                    keepna=False
+                    keepna=False,
+                    threads=False,  # Single-threaded to be more conservative
+                    timeout=30      # Add timeout
                 )
                 
-                # If we got data, break out of retry loop
-                if not self.df.empty:
-                    print(f"Successfully fetched real data for {self.ticker}: {len(self.df)} days")
+                # Check if we got meaningful data
+                if not self.df.empty and len(self.df) > 10:  # Need at least 10 days
+                    print(f"✓ Successfully fetched real data for {self.ticker}: {len(self.df)} days")
+                    print(f"  Date range: {self.df.index[0].date()} to {self.df.index[-1].date()}")
+                    print(f"  Latest price: ${self.df['Close'].iloc[-1]:.2f}")
                     return self.df
+                elif not self.df.empty:
+                    print(f"⚠ Got data but insufficient ({len(self.df)} days). Retrying...")
+                else:
+                    print(f"⚠ No data returned. Retrying...")
                     
             except Exception as e:
                 error_str = str(e).lower()
-                if "429" in error_str or "too many requests" in error_str:
-                    print(f"Yahoo Finance rate limiting detected (attempt {attempt + 1}/{max_retries})")
+                print(f"Yahoo Finance error (attempt {attempt + 1}/{max_retries}): {e}")
+                
+                # Check for specific error types
+                if any(term in error_str for term in ["429", "too many requests", "rate limit"]):
+                    print("  → Rate limiting detected")
+                    if attempt < max_retries - 1:
+                        continue
+                elif any(term in error_str for term in ["timeout", "connection", "network"]):
+                    print("  → Network issue detected")
                     if attempt < max_retries - 1:
                         continue
                 else:
-                    print(f"Yahoo Finance error: {e}")
-                    break
+                    print(f"  → Other error: {e}")
+                    # For other errors, still try to retry but with shorter delay
+                    if attempt < max_retries - 1:
+                        time.sleep(1)
+                        continue
         
-        # Fallback to mock data if Yahoo Finance fails
-        print(f"Using mock data for {ticker} due to Yahoo Finance issues...")
+        # Fallback to mock data if all retries failed
+        print(f"\n⚠ Yahoo Finance failed after {max_retries} attempts. Using mock data for {ticker}...")
+        print("  This might be due to:")
+        print("  - Rate limiting (too many requests)")
+        print("  - Network connectivity issues")
+        print("  - Yahoo Finance API maintenance")
+        print("  - Invalid ticker symbol")
+        
         self.df = self.mock_provider.generate_mock_data(ticker, days_back)
         self.using_mock_data = True
         

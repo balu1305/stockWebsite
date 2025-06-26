@@ -5,6 +5,7 @@ This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-
 Before running the application, you need to set up your environment variables:
 
 1. Copy the environment template:
+
    ```bash
    cp .env.template .env.local
    ```
