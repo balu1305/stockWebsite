@@ -1,0 +1,35 @@
+// Inside MarketPage component
+
+const handleBuy = async (symbol, price, quantity) => {
+  const res = await fetch("/api/buy", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      userId: "demoUser",
+      symbol,
+      price,
+      quantity
+    })
+  });
+
+  const data = await res.json();
+  if (res.ok) alert("Stock purchased!");
+  else alert(data.error);
+};
+
+const handleSell = async (symbol, price, quantity) => {
+  const res = await fetch("/api/sell", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      userId: "demoUser",
+      symbol,
+      price,
+      quantity
+    })
+  });
+
+  const data = await res.json();
+  if (res.ok) alert("Stock sold!");
+  else alert(data.error);
+};

@@ -1,0 +1,11 @@
+// Example auto-refresh call in market page
+await handleBuy(symbol, price, quantity);
+toast.success("Purchase successful!");
+playSound();
+await fetchMarketData();
+await fetchPortfolio();
+
+function playSound() {
+  const audio = new Audio("/sounds/confirm.mp3");
+  audio.play();
+}
